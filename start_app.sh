@@ -48,4 +48,4 @@ echo "  > http://$IP_ADDR:5001"
 echo "Press Ctrl+C to stop the server"
 echo ""
 
-python3 engineering_balloon_tool.py
+python3 -u engineering_balloon_tool.py

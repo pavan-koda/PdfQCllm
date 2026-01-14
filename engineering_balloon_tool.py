@@ -51,6 +51,7 @@ HTML_TEMPLATE = """
         <div class="spinner"></div>
         <h2 style="color: #2c3e50; margin-top: 20px;">🎈 Ballooning & Analyzing...</h2>
         <p>Please wait while we process your drawing.</p>
+        <p style="color: #7f8c8d; font-size: 0.9rem;">Check the server terminal for real-time progress.</p>
     </div>
 
     <div class="container">
@@ -134,6 +135,7 @@ def get_llm_dimensions(page_pixmap):
         # Convert PyMuPDF pixmap to PNG bytes
         img_data = page_pixmap.tobytes("png")
         
+        print("    [AI] Sending image to Llama 3.2 Vision... (This may take 10-30 seconds)")
         # Ask LLM to list dimensions
         response = ollama.chat(
             model='llama3.2-vision:11b',
@@ -148,17 +150,20 @@ def get_llm_dimensions(page_pixmap):
         # Extract anything that looks like a value from the response
         # This regex captures numbers, decimals, and codes like M6, R5
         found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
-        print(f"LLM Found Dimensions: {found_values}")
+        print(f"    [AI] Found {len(found_values)} dimensions: {list(found_values)[:5]}...")
         return found_values
     except Exception as e:
-        print(f"LLM Error: {e}")
+        print(f"    [AI] Error: {e}")
         return set()
 
 def process_pdf(input_path, output_path):
     doc = fitz.open(input_path)
     balloon_count = 0
+    total_pages = len(doc)
+    print(f"\nStarting processing for: {os.path.basename(input_path)} ({total_pages} pages)")
     
-    for page in doc:
+    for page_num, page in enumerate(doc):
+        print(f"--- Processing Page {page_num + 1}/{total_pages} ---")
         # 0. Get LLM Analysis for this page
         # Render page to image for the AI
         pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # 1.5x zoom for clarity
@@ -217,6 +222,7 @@ def process_pdf(input_path, output_path):
                 
     doc.save(output_path)
     doc.close()
+    print(f"Done! Saved to {output_path}. Total balloons: {balloon_count}\n")
     return balloon_count
 
 @app.route('/', methods=['GET', 'POST'])
