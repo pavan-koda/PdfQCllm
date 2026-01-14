@@ -1,6 +1,11 @@
 import os
 import re
 import fitz  # PyMuPDF
+try:
+    import ollama
+except ImportError:
+    print("Ollama library not found. Please run pip install ollama")
+
 from flask import Flask, request, send_file, render_template_string, url_for
 from werkzeug.utils import secure_filename
 
@@ -120,11 +125,45 @@ def is_dimension(text, has_nearby_line=False):
                 
     return False
 
+def get_llm_dimensions(page_pixmap):
+    """
+    Uses Llama 3.2 Vision to identify dimension text visually.
+    Returns a set of strings that the model identifies as dimensions.
+    """
+    try:
+        # Convert PyMuPDF pixmap to PNG bytes
+        img_data = page_pixmap.tobytes("png")
+        
+        # Ask LLM to list dimensions
+        response = ollama.chat(
+            model='llama3.2-vision:11b',
+            messages=[{
+                'role': 'user',
+                'content': 'Analyze this engineering drawing. List all the dimension values (numbers like 50, 10.5, or codes like M6, R5) that are pointed to by arrows or lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"]. Do not include title block text.',
+                'images': [img_data]
+            }]
+        )
+        
+        content = response['message']['content']
+        # Extract anything that looks like a value from the response
+        # This regex captures numbers, decimals, and codes like M6, R5
+        found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
+        print(f"LLM Found Dimensions: {found_values}")
+        return found_values
+    except Exception as e:
+        print(f"LLM Error: {e}")
+        return set()
+
 def process_pdf(input_path, output_path):
     doc = fitz.open(input_path)
     balloon_count = 0
     
     for page in doc:
+        # 0. Get LLM Analysis for this page
+        # Render page to image for the AI
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # 1.5x zoom for clarity
+        llm_values = get_llm_dimensions(pix)
+
         # 1. Analyze Vector Graphics (Lines & Arrows)
         # We get all drawing paths to check for proximity to text
         drawings = page.get_drawings()
@@ -157,7 +196,10 @@ def process_pdf(input_path, output_path):
                     break
             
             # 3. Decide if it's a dimension
-            if is_dimension(text, has_nearby_line=has_line):
+            # Condition A: Strong geometric match (symbol or near line)
+            # Condition B: LLM explicitly identified this value as a dimension
+            clean_val = text.strip('.,;()[]')
+            if is_dimension(text, has_nearby_line=has_line) or (clean_val in llm_values):
                 balloon_count += 1
                 x1, y0 = w[2], w[1] # Top-right corner of text
                 
