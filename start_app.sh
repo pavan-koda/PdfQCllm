@@ -15,14 +15,22 @@ if [ ! -d "venv" ]; then
     source venv/bin/activate
     
     echo "[SETUP] Installing dependencies..."
-    pip install flask pymupdf
+    pip install flask pymupdf ollama
 else
     source venv/bin/activate
     # Ensure deps are there just in case
-    if ! python3 -c "import fitz, flask" 2>/dev/null; then
+    if ! python3 -c "import fitz, flask, ollama" 2>/dev/null; then
          echo "[SETUP] Installing missing dependencies..."
-         pip install flask pymupdf
+         pip install flask pymupdf ollama
     fi
+fi
+
+# Start Ollama if not running (required for Llama Vision)
+if ! curl -s http://localhost:11434/api/tags &>/dev/null; then
+    echo "[INFO] Starting Ollama server..."
+    ollama serve &
+    # Give it a few seconds to initialize
+    sleep 5
 fi
 
 echo ""
