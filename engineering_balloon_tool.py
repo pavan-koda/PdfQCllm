@@ -83,25 +83,41 @@ HTML_TEMPLATE = """
 </html>
 """
 
-def is_dimension(text):
+def is_dimension(text, has_nearby_line=False):
     """
     Detects if text is likely an engineering dimension.
-    Matches: 10.5, 10.00, Ø10, R5, M6, 45°
+    Uses text patterns and proximity to vector lines (arrows).
     """
     clean_text = text.strip('.,;()[]')
     if not clean_text: return False
     
-    patterns = [
-        r'^\d+$',               # Integers (e.g., 10, 500)
-        r'^\d+\.\d+$',          # Decimals (e.g., 10.5)
+    # Strong patterns: Symbols that definitely indicate dimensions
+    strong_patterns = [
         r'^[ØRMr]\d+(\.\d+)?$', # Symbols (e.g., Ø10, R5, M6)
         r'^[M]\d+(?:[xX]\d+(?:\.\d+)?)?$', # Metric threads (e.g. M6, M6x1)
         r'^\d+(\.\d+)?°$',      # Degrees (e.g., 45°)
-        r'^\d+(\.\d+)?[xX]$'    # Multipliers (e.g., 2X)
+        r'^\d+(\.\d+)?[xX]$',   # Multipliers (e.g., 2X)
+        r'^\d+[\-±]\d+$'        # Tolerances (e.g. 10-0.1)
     ]
-    for p in patterns:
+    
+    # Weak patterns: Numbers (integers/decimals)
+    # These are only dimensions if they are near a line/arrow (to avoid page numbers, notes)
+    weak_patterns = [
+        r'^\d+$',               # Integers (e.g., 10)
+        r'^\d+\.\d+$',          # Decimals (e.g., 10.5)
+        r'^\d+,\d+$',           # European Decimals (e.g., 10,5)
+    ]
+
+    for p in strong_patterns:
         if re.match(p, clean_text, re.IGNORECASE):
             return True
+            
+    # If the text is near a vector line (arrow), we accept simple numbers
+    if has_nearby_line:
+        for p in weak_patterns:
+            if re.match(p, clean_text, re.IGNORECASE):
+                return True
+                
     return False
 
 def process_pdf(input_path, output_path):
@@ -109,12 +125,39 @@ def process_pdf(input_path, output_path):
     balloon_count = 0
     
     for page in doc:
+        # 1. Analyze Vector Graphics (Lines & Arrows)
+        # We get all drawing paths to check for proximity to text
+        drawings = page.get_drawings()
+        drawing_rects = []
+        for path in drawings:
+            # Filter: Ignore huge boxes (borders) or tiny specks
+            r = path["rect"]
+            if r.width < page.rect.width * 0.9 and (r.width > 1 or r.height > 1):
+                drawing_rects.append(r)
+
         # Get words with coordinates: (x0, y0, x1, y1, "text", ...)
         words = page.get_text("words")
         
         for w in words:
             text = w[4]
-            if is_dimension(text):
+            
+            # 2. Check Proximity to Lines/Arrows
+            # Expand word area dynamically based on font size to find touching lines
+            # Handles gaps in dimension lines (<--- 50 --->) and angled leaders
+            word_rect = fitz.Rect(w[0], w[1], w[2], w[3])
+            word_height = word_rect.height
+            expansion = max(15, word_height * 2.5)
+            search_area = fitz.Rect(word_rect.x0 - expansion, word_rect.y0 - expansion, 
+                                    word_rect.x1 + expansion, word_rect.y1 + expansion)
+            
+            has_line = False
+            for dr in drawing_rects:
+                if search_area.intersects(dr):
+                    has_line = True
+                    break
+            
+            # 3. Decide if it's a dimension
+            if is_dimension(text, has_nearby_line=has_line):
                 balloon_count += 1
                 x1, y0 = w[2], w[1] # Top-right corner of text
                 
