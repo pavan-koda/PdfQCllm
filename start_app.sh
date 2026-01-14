@@ -37,8 +37,6 @@ echo ""
 echo "========================================================================"
 echo "                    STARTING TOOL"
 echo "========================================================================"
-echo ""
-
 # Attempt to detect the primary IP address
 IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
 if [ -z "$IP_ADDR" ]; then

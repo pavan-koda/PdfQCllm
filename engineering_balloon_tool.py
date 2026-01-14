@@ -41,9 +41,19 @@ HTML_TEMPLATE = """
         .preview-container { margin-top: 2rem; height: 700px; border: 1px solid #ddd; }
         iframe { width: 100%; height: 100%; border: none; }
         .stats { text-align: center; margin: 1rem 0; color: #27ae60; font-weight: bold; }
+        /* Loader */
+        .loader-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.9); z-index: 1000; flex-direction: column; justify-content: center; align-items: center; }
+        .spinner { border: 8px solid #f3f3f3; border-top: 8px solid #3498db; border-radius: 50%; width: 60px; height: 60px; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
+    <div id="loader" class="loader-overlay">
+        <div class="spinner"></div>
+        <h2 style="color: #2c3e50; margin-top: 20px;">🎈 Ballooning & Analyzing...</h2>
+        <p>Please wait while we process your drawing.</p>
+    </div>
+
     <div class="container">
         <h1>📐 Auto-Ballooning Tool</h1>
         
@@ -77,6 +87,11 @@ HTML_TEMPLATE = """
         </div>
         {% endif %}
     </div>
+    <script>
+        document.querySelector('form')?.addEventListener('submit', function() {
+            document.getElementById('loader').style.display = 'flex';
+        });
+    </script>
 </body>
 </html>
 """
@@ -86,14 +101,19 @@ def is_dimension(text):
     Detects if text is likely an engineering dimension.
     Matches: 10.5, 10.00, Ø10, R5, M6, 45°
     """
-    clean_text = text.strip('.,;')
+    clean_text = text.strip('.,;()[]')
+    if not clean_text: return False
+    
     patterns = [
+        r'^\d+$',               # Integers (e.g., 10, 500)
         r'^\d+\.\d+$',          # Decimals (e.g., 10.5)
         r'^[ØRMr]\d+(\.\d+)?$', # Symbols (e.g., Ø10, R5, M6)
-        r'^\d+(\.\d+)?°$'       # Degrees (e.g., 45°)
+        r'^[M]\d+(?:[xX]\d+(?:\.\d+)?)?$', # Metric threads (e.g. M6, M6x1)
+        r'^\d+(\.\d+)?°$',      # Degrees (e.g., 45°)
+        r'^\d+(\.\d+)?[xX]$'    # Multipliers (e.g., 2X)
     ]
     for p in patterns:
-        if re.match(p, clean_text):
+        if re.match(p, clean_text, re.IGNORECASE):
             return True
     return False
 
