@@ -139,5 +139,5 @@ def download_file(filename):
     return send_file(os.path.join(app.config['PROCESSED_FOLDER'], filename))
 
 if __name__ == '__main__':
-    print("Starting Balloon Tool on http://localhost:5001")
-    app.run(debug=True, port=5001)
+    print("Starting Balloon Tool on http://0.0.0.0:5001")
+    app.run(host='0.0.0.0', debug=True, port=5001)

@@ -30,7 +30,15 @@ echo "========================================================================"
 echo "                    STARTING TOOL"
 echo "========================================================================"
 echo ""
-echo "Server will start on http://localhost:5001"
+
+# Attempt to detect the primary IP address
+IP_ADDR=$(hostname -I 2>/dev/null | awk '{print $1}')
+if [ -z "$IP_ADDR" ]; then
+    IP_ADDR="localhost"
+fi
+
+echo "Server is running! Access it at:"
+echo "  > http://$IP_ADDR:5001"
 echo "Press Ctrl+C to stop the server"
 echo ""
 
