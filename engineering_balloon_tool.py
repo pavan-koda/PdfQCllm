@@ -1,6 +1,7 @@
 import os
 import re
 import fitz  # PyMuPDF
+import concurrent.futures
 try:
     import ollama
 except ImportError:
@@ -136,15 +137,21 @@ def get_llm_dimensions(page_pixmap):
         img_data = page_pixmap.tobytes("png")
         
         print("    [AI] Sending image to Llama 3.2 Vision... (This may take 10-30 seconds)")
-        # Ask LLM to list dimensions
-        response = ollama.chat(
-            model='llama3.2-vision:11b',
-            messages=[{
-                'role': 'user',
-                'content': 'Analyze this engineering drawing. List all the dimension values (numbers like 50, 10.5, or codes like M6, R5) that are pointed to by arrows or lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"]. Do not include title block text.',
-                'images': [img_data]
-            }]
-        )
+        
+        # Run AI with a timeout to prevent hanging forever
+        def call_ai():
+            return ollama.chat(
+                model='llama3.2-vision:11b',
+                messages=[{
+                    'role': 'user',
+                    'content': 'Analyze this engineering drawing. List all the dimension values (numbers like 50, 10.5, or codes like M6, R5) that are pointed to by arrows or lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"]. Do not include title block text.',
+                    'images': [img_data]
+                }]
+            )
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(call_ai)
+            response = future.result(timeout=60) # 60 second timeout
         
         content = response['message']['content']
         # Extract anything that looks like a value from the response
@@ -152,6 +159,9 @@ def get_llm_dimensions(page_pixmap):
         found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
         print(f"    [AI] Found {len(found_values)} dimensions: {list(found_values)[:5]}...")
         return found_values
+    except concurrent.futures.TimeoutError:
+        print("    [AI] Timed out! Skipping AI analysis for this page.")
+        return set()
     except Exception as e:
         print(f"    [AI] Error: {e}")
         return set()
@@ -166,7 +176,7 @@ def process_pdf(input_path, output_path):
         print(f"--- Processing Page {page_num + 1}/{total_pages} ---")
         # 0. Get LLM Analysis for this page
         # Render page to image for the AI
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)) # 1.5x zoom for clarity
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0)) # 1.0x zoom (faster)
         llm_values = get_llm_dimensions(pix)
 
         # 1. Analyze Vector Graphics (Lines & Arrows)

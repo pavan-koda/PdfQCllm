@@ -33,6 +33,10 @@ if ! curl -s http://localhost:11434/api/tags &>/dev/null; then
     sleep 5
 fi
 
+# Ensure the model is actually installed (shows progress bar if downloading)
+echo "[INFO] Checking Llama Vision model status..."
+ollama pull llama3.2-vision:11b
+
 echo ""
 echo "========================================================================"
 echo "                    STARTING TOOL"
