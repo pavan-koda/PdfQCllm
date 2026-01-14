@@ -1,12 +1,6 @@
 import os
 import re
 import fitz  # PyMuPDF
-try:
-    import ollama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
-
 from flask import Flask, request, send_file, render_template_string, url_for
 from werkzeug.utils import secure_filename
 
@@ -68,13 +62,6 @@ HTML_TEMPLATE = """
         </div>
         {% else %}
         <div class="stats">✅ Added {{ count }} balloons to {{ filename }}</div>
-        
-        {% if ai_summary %}
-        <div style="background: #e8f6f3; padding: 1rem; border-radius: 5px; margin: 1rem 0; text-align: left; border-left: 5px solid #27ae60;">
-            <strong>🤖 Llama Vision Analysis:</strong>
-            <p style="white-space: pre-wrap; margin-top: 0.5rem;">{{ ai_summary }}</p>
-        </div>
-        {% endif %}
         
         <div style="text-align: center;">
             <a href="{{ url_for('download_file', filename=processed_file) }}" class="btn">💾 Download PDF</a>
@@ -147,33 +134,6 @@ def process_pdf(input_path, output_path):
     doc.close()
     return balloon_count
 
-def get_ai_summary(input_path):
-    """
-    Uses Llama 3.2 Vision to analyze the drawing.
-    """
-    if not OLLAMA_AVAILABLE:
-        return "Ollama library not installed. AI analysis unavailable."
-    
-    try:
-        # Convert first page to image for the LLM
-        doc = fitz.open(input_path)
-        page = doc[0]
-        pix = page.get_pixmap(matrix=fitz.Matrix(1, 1))
-        img_data = pix.tobytes("png")
-        doc.close()
-        
-        response = ollama.chat(
-            model='llama3.2-vision:11b',
-            messages=[{
-                'role': 'user',
-                'content': 'You are an expert mechanical engineer. Analyze this technical drawing. Briefly list the main component shown and describe the key features (holes, flanges, dimensions) you see.',
-                'images': [img_data]
-            }]
-        )
-        return response['message']['content']
-    except Exception as e:
-        return f"AI Analysis could not run (ensure Ollama is running): {str(e)}"
-
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -190,9 +150,8 @@ def index():
             output_path = os.path.join(app.config['PROCESSED_FOLDER'], output_filename)
             
             count = process_pdf(input_path, output_path)
-            ai_summary = get_ai_summary(input_path)
             
-            return render_template_string(HTML_TEMPLATE, processed_file=output_filename, filename=filename, count=count, ai_summary=ai_summary)
+            return render_template_string(HTML_TEMPLATE, processed_file=output_filename, filename=filename, count=count)
             
     return render_template_string(HTML_TEMPLATE, processed_file=None)
 
