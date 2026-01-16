@@ -91,12 +91,13 @@ HTML_TEMPLATE = """
 </html>
 """
 
-def is_dimension(text, has_nearby_line=False):
+def is_dimension(text, has_nearby_line=False, has_nearby_arrow=False):
     """
     Detects if text is likely an engineering dimension.
     Uses text patterns and proximity to vector lines (arrows).
     """
-    clean_text = text.strip('.,;()[]')
+    # Clean whitespace first, then punctuation
+    clean_text = text.strip().strip('.,;()[]')
     if not clean_text: return False
     
     # Strong patterns: Symbols that definitely indicate dimensions
@@ -118,6 +119,12 @@ def is_dimension(text, has_nearby_line=False):
 
     for p in strong_patterns:
         if re.match(p, clean_text, re.IGNORECASE):
+            return True
+    
+    # If near an arrow (filled shape), it is almost certainly a dimension
+    # We accept anything containing a digit (e.g. "2 HOLES", "10.5 REF")
+    if has_nearby_arrow:
+        if any(char.isdigit() for char in clean_text):
             return True
             
     # If the text is near a vector line (arrow), we accept simple numbers
@@ -141,7 +148,7 @@ def get_llm_dimensions(page_pixmap):
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... Using 40GB System RAM (CPU Mode). This may take 1-3 minutes.", flush=True)
+                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... Using 40GB System RAM (High Res Mode). This may take 2-5 minutes.", flush=True)
                 start_time = time.time()
                 
                 # Run AI with a timeout to prevent hanging forever
@@ -150,7 +157,7 @@ def get_llm_dimensions(page_pixmap):
                         model='llama3.2-vision:11b',
                         messages=[{
                             'role': 'user',
-                            'content': 'Analyze this engineering drawing. List all the dimension values (numbers like 50, 10.5, or codes like M6, R5) that are pointed to by arrows or lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"]. Do not include title block text.',
+                            'content': 'Analyze this engineering drawing. Extract EVERY dimension value visible (numbers like 50, 10.5, 0.05, or codes like M6, R5, Ø10). Look closely at arrows and lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"].',
                             'images': [img_data]
                         }],
                         options={
@@ -205,8 +212,8 @@ def process_pdf(input_path, output_path):
         # 0. Get LLM Analysis for this page
         # Render page to image for the AI
         
-        # OPTIMIZATION: Resize image to max 1024px to prevent AI hang on large drawings
-        limit = 768  # Reduced to 768px to speed up CPU processing
+        # ACCURACY: Use higher resolution (2048px) to ensure dimensions are readable
+        limit = 2048 
         dim = max(page.rect.width, page.rect.height)
         zoom = limit / dim if dim > limit else 1.0
         
@@ -216,12 +223,22 @@ def process_pdf(input_path, output_path):
         # 1. Analyze Vector Graphics (Lines & Arrows)
         # We get all drawing paths to check for proximity to text
         drawings = page.get_drawings()
-        drawing_rects = []
+        lines = []
+        arrows = []
+        
         for path in drawings:
             # Filter: Ignore huge boxes (borders) or tiny specks
             r = path["rect"]
-            if r.width < page.rect.width * 0.9 and (r.width > 1 or r.height > 1):
-                drawing_rects.append(r)
+            if r.width > page.rect.width * 0.9 or r.height > page.rect.height * 0.9:
+                continue
+                
+            # Check for arrow-like characteristics (small filled shapes)
+            is_filled = path.get("fill") is not None
+            
+            if is_filled and r.width < 20 and r.height < 20:
+                arrows.append(r)
+            elif r.width > 1 or r.height > 1:
+                lines.append(r)
 
         # Get words with coordinates: (x0, y0, x1, y1, "text", ...)
         words = page.get_text("words")
@@ -238,17 +255,24 @@ def process_pdf(input_path, output_path):
             search_area = fitz.Rect(word_rect.x0 - expansion, word_rect.y0 - expansion, 
                                     word_rect.x1 + expansion, word_rect.y1 + expansion)
             
-            has_line = False
-            for dr in drawing_rects:
-                if search_area.intersects(dr):
-                    has_line = True
+            has_arrow = False
+            for ar in arrows:
+                if search_area.intersects(ar):
+                    has_arrow = True
                     break
+            
+            has_line = False
+            if not has_arrow:
+                for lr in lines:
+                    if search_area.intersects(lr):
+                        has_line = True
+                        break
             
             # 3. Decide if it's a dimension
             # Condition A: Strong geometric match (symbol or near line)
             # Condition B: LLM explicitly identified this value as a dimension
-            clean_val = text.strip('.,;()[]')
-            if is_dimension(text, has_nearby_line=has_line) or (clean_val in llm_values):
+            clean_val = text.strip().strip('.,;()[]')
+            if is_dimension(text, has_nearby_line=has_line, has_nearby_arrow=has_arrow) or (clean_val in llm_values):
                 balloon_count += 1
                 x1, y0 = w[2], w[1] # Top-right corner of text
                 
