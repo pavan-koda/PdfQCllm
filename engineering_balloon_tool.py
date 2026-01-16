@@ -157,7 +157,19 @@ def get_llm_dimensions(page_pixmap):
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(call_ai)
-                    response = future.result(timeout=600) # Increased timeout (10 min) for 4GB GPU
+                    
+                    # Wait loop to show progress every 10 seconds
+                    wait_time = 0
+                    timeout_limit = 600
+                    while wait_time < timeout_limit:
+                        try:
+                            response = future.result(timeout=10)
+                            break
+                        except concurrent.futures.TimeoutError:
+                            wait_time += 10
+                            print(f"    [AI] Still processing... ({wait_time}s elapsed)")
+                            if wait_time >= timeout_limit:
+                                raise
                 
                 elapsed = time.time() - start_time
                 print(f"    [AI] Analysis complete in {elapsed:.1f} seconds.")
