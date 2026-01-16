@@ -7,7 +7,7 @@ try:
 except ImportError:
     print("Ollama library not found. Please run pip install ollama")
 
-from flask import Flask, request, send_file, render_template_string, url_for
+from flask import Flask, request, send_file, render_template_string, url_for, redirect
 from werkzeug.utils import secure_filename
 
 # Configuration
@@ -136,31 +136,38 @@ def get_llm_dimensions(page_pixmap):
         # Convert PyMuPDF pixmap to PNG bytes
         img_data = page_pixmap.tobytes("png")
         
-        print("    [AI] Sending image to Llama 3.2 Vision... (This may take 10-30 seconds)")
-        
-        # Run AI with a timeout to prevent hanging forever
-        def call_ai():
-            return ollama.chat(
-                model='llama3.2-vision:11b',
-                messages=[{
-                    'role': 'user',
-                    'content': 'Analyze this engineering drawing. List all the dimension values (numbers like 50, 10.5, or codes like M6, R5) that are pointed to by arrows or lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"]. Do not include title block text.',
-                    'images': [img_data]
-                }]
-            )
+        # Retry loop
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})...")
+                
+                # Run AI with a timeout to prevent hanging forever
+                def call_ai():
+                    return ollama.chat(
+                        model='llama3.2-vision:11b',
+                        messages=[{
+                            'role': 'user',
+                            'content': 'Analyze this engineering drawing. List all the dimension values (numbers like 50, 10.5, or codes like M6, R5) that are pointed to by arrows or lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"]. Do not include title block text.',
+                            'images': [img_data]
+                        }]
+                    )
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(call_ai)
-            response = future.result(timeout=60) # 60 second timeout
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(call_ai)
+                    response = future.result(timeout=40) # 40 second timeout per attempt
+                
+                content = response['message']['content']
+                found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
+                print(f"    [AI] Found {len(found_values)} dimensions: {list(found_values)[:5]}...")
+                return found_values
+
+            except concurrent.futures.TimeoutError:
+                print(f"    [AI] Attempt {attempt} timed out.")
+            except Exception as e:
+                print(f"    [AI] Attempt {attempt} failed: {e}")
         
-        content = response['message']['content']
-        # Extract anything that looks like a value from the response
-        # This regex captures numbers, decimals, and codes like M6, R5
-        found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
-        print(f"    [AI] Found {len(found_values)} dimensions: {list(found_values)[:5]}...")
-        return found_values
-    except concurrent.futures.TimeoutError:
-        print("    [AI] Timed out! Skipping AI analysis for this page.")
+        print("    [AI] All attempts failed. Skipping AI analysis.")
         return set()
     except Exception as e:
         print(f"    [AI] Error: {e}")
@@ -252,9 +259,12 @@ def index():
             
             count = process_pdf(input_path, output_path)
             
-            return render_template_string(HTML_TEMPLATE, processed_file=output_filename, filename=filename, count=count)
+            return redirect(url_for('index', processed_file=output_filename, filename=filename, count=count))
             
-    return render_template_string(HTML_TEMPLATE, processed_file=None)
+    processed_file = request.args.get('processed_file')
+    filename = request.args.get('filename')
+    count = request.args.get('count')
+    return render_template_string(HTML_TEMPLATE, processed_file=processed_file, filename=filename, count=count)
 
 @app.route('/download/<filename>')
 def download_file(filename):
