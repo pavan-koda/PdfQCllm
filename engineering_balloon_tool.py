@@ -141,7 +141,7 @@ def get_llm_dimensions(page_pixmap):
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... Using system RAM. This may take 1-5 minutes.")
+                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... Using 40GB System RAM (CPU Mode). This may take 1-3 minutes.", flush=True)
                 start_time = time.time()
                 
                 # Run AI with a timeout to prevent hanging forever
@@ -152,7 +152,12 @@ def get_llm_dimensions(page_pixmap):
                             'role': 'user',
                             'content': 'Analyze this engineering drawing. List all the dimension values (numbers like 50, 10.5, or codes like M6, R5) that are pointed to by arrows or lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"]. Do not include title block text.',
                             'images': [img_data]
-                        }]
+                        }],
+                        options={
+                            "num_gpu": 0,       # Force CPU/RAM usage (uses your 40GB RAM)
+                            "num_thread": 8,    # Use 8 CPU threads for speed
+                            "num_ctx": 2048     # Limit context to save memory bandwidth
+                        }
                     )
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -167,12 +172,12 @@ def get_llm_dimensions(page_pixmap):
                             break
                         except concurrent.futures.TimeoutError:
                             wait_time += 10
-                            print(f"    [AI] Still processing... ({wait_time}s elapsed)")
+                            print(f"    [AI] Still processing... ({wait_time}s elapsed)", flush=True)
                             if wait_time >= timeout_limit:
                                 raise
                 
                 elapsed = time.time() - start_time
-                print(f"    [AI] Analysis complete in {elapsed:.1f} seconds.")
+                print(f"    [AI] Analysis complete in {elapsed:.1f} seconds.", flush=True)
                 content = response['message']['content']
                 found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
                 print(f"    [AI] Found {len(found_values)} dimensions: {list(found_values)[:5]}...")
@@ -196,10 +201,16 @@ def process_pdf(input_path, output_path):
     print(f"\nStarting processing for: {os.path.basename(input_path)} ({total_pages} pages)")
     
     for page_num, page in enumerate(doc):
-        print(f"--- Processing Page {page_num + 1}/{total_pages} ---")
+        print(f"--- Processing Page {page_num + 1}/{total_pages} ---", flush=True)
         # 0. Get LLM Analysis for this page
         # Render page to image for the AI
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.0, 1.0)) # 1.0x zoom (faster)
+        
+        # OPTIMIZATION: Resize image to max 1024px to prevent AI hang on large drawings
+        limit = 768  # Reduced to 768px to speed up CPU processing
+        dim = max(page.rect.width, page.rect.height)
+        zoom = limit / dim if dim > limit else 1.0
+        
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom)) 
         llm_values = get_llm_dimensions(pix)
 
         # 1. Analyze Vector Graphics (Lines & Arrows)
