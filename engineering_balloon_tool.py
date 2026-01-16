@@ -140,7 +140,7 @@ def get_llm_dimensions(page_pixmap):
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})...")
+                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... This may take several minutes on 4GB GPU.")
                 
                 # Run AI with a timeout to prevent hanging forever
                 def call_ai():
@@ -155,7 +155,7 @@ def get_llm_dimensions(page_pixmap):
 
                 with concurrent.futures.ThreadPoolExecutor() as executor:
                     future = executor.submit(call_ai)
-                    response = future.result(timeout=40) # 40 second timeout per attempt
+                    response = future.result(timeout=600) # Increased timeout (10 min) for 4GB GPU
                 
                 content = response['message']['content']
                 found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
