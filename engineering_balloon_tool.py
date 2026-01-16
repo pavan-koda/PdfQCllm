@@ -2,6 +2,7 @@ import os
 import re
 import fitz  # PyMuPDF
 import concurrent.futures
+import time
 try:
     import ollama
 except ImportError:
@@ -140,7 +141,8 @@ def get_llm_dimensions(page_pixmap):
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... This may take several minutes on 4GB GPU.")
+                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... Using system RAM. This may take 1-5 minutes.")
+                start_time = time.time()
                 
                 # Run AI with a timeout to prevent hanging forever
                 def call_ai():
@@ -157,6 +159,8 @@ def get_llm_dimensions(page_pixmap):
                     future = executor.submit(call_ai)
                     response = future.result(timeout=600) # Increased timeout (10 min) for 4GB GPU
                 
+                elapsed = time.time() - start_time
+                print(f"    [AI] Analysis complete in {elapsed:.1f} seconds.")
                 content = response['message']['content']
                 found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
                 print(f"    [AI] Found {len(found_values)} dimensions: {list(found_values)[:5]}...")
