@@ -3,6 +3,7 @@ import re
 import fitz  # PyMuPDF
 import concurrent.futures
 import time
+import json
 try:
     import ollama
 except ImportError:
@@ -71,6 +72,12 @@ HTML_TEMPLATE = """
         {% else %}
         <div class="stats">✅ Added {{ count }} balloons to {{ filename }}</div>
         
+        {% if description %}
+        <div style="text-align: center; color: #2c3e50; margin-bottom: 1rem; font-size: 1.1rem;">
+            🔍 <strong>Identified:</strong> {{ description }}
+        </div>
+        {% endif %}
+
         <div style="text-align: center;">
             <a href="{{ url_for('download_file', filename=processed_file) }}" class="btn">💾 Download PDF</a>
             <a href="/" class="btn" style="background-color: #95a5a6;">🔄 New File</a>
@@ -135,10 +142,10 @@ def is_dimension(text, has_nearby_line=False, has_nearby_arrow=False):
                 
     return False
 
-def get_llm_dimensions(page_pixmap):
+def get_llm_analysis(page_pixmap):
     """
-    Uses Llama 3.2 Vision to identify dimension text visually.
-    Returns a set of strings that the model identifies as dimensions.
+    Uses Llama 3.2 Vision to identify the drawing and extract dimension text.
+    Returns (description, set_of_dimensions).
     """
     try:
         # Convert PyMuPDF pixmap to PNG bytes
@@ -148,7 +155,7 @@ def get_llm_dimensions(page_pixmap):
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... Using 40GB System RAM (High Res Mode). This may take 2-5 minutes.", flush=True)
+                print(f"    [AI] Sending image to Llama 3.2 Vision (Attempt {attempt}/{max_retries})... Using 40GB System RAM. This may take 5-15 minutes.", flush=True)
                 start_time = time.time()
                 
                 # Run AI with a timeout to prevent hanging forever
@@ -157,13 +164,13 @@ def get_llm_dimensions(page_pixmap):
                         model='llama3.2-vision:11b',
                         messages=[{
                             'role': 'user',
-                            'content': 'Analyze this engineering drawing. Extract EVERY dimension value visible (numbers like 50, 10.5, 0.05, or codes like M6, R5, Ø10). Look closely at arrows and lines. Return ONLY a JSON-style list of the values found. Example: ["50", "10.5", "M6"].',
+                            'content': 'Analyze this engineering drawing. 1. Identify the component shown (e.g. "Flange", "Bracket", "Schematic"). 2. Extract EVERY dimension value visible (numbers like 50, 10.5, 0.05, or codes like M6, R5, Ø10). Return a JSON object with keys "identification" and "dimensions". Example: {"identification": "Flange", "dimensions": ["50", "10.5", "M6"]}.',
                             'images': [img_data]
                         }],
                         options={
                             "num_gpu": 0,       # Force CPU/RAM usage (uses your 40GB RAM)
                             "num_thread": 8,    # Use 8 CPU threads for speed
-                            "num_ctx": 2048     # Limit context to save memory bandwidth
+                            "num_ctx": 8192     # Increased context to handle high-res image tokens
                         }
                     )
 
@@ -172,7 +179,7 @@ def get_llm_dimensions(page_pixmap):
                     
                     # Wait loop to show progress every 10 seconds
                     wait_time = 0
-                    timeout_limit = 600
+                    timeout_limit = 2400 # Increased to 40 minutes to prevent timeout on slow CPUs
                     while wait_time < timeout_limit:
                         try:
                             response = future.result(timeout=10)
@@ -186,9 +193,25 @@ def get_llm_dimensions(page_pixmap):
                 elapsed = time.time() - start_time
                 print(f"    [AI] Analysis complete in {elapsed:.1f} seconds.", flush=True)
                 content = response['message']['content']
-                found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
+                
+                description = "Engineering Drawing"
+                found_values = set()
+                
+                try:
+                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                    if json_match:
+                        data = json.loads(json_match.group(0))
+                        description = data.get("identification", description)
+                        found_values = set(data.get("dimensions", []))
+                    else:
+                        found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
+                except Exception as e:
+                    print(f"    [AI] JSON parsing failed: {e}. Using regex fallback.")
+                    found_values = set(re.findall(r'[ØRMr]?\d+(?:[.,]\d+)?(?:[xX]\d+)?°?', content))
+
+                print(f"    [AI] Identified: {description}")
                 print(f"    [AI] Found {len(found_values)} dimensions: {list(found_values)[:5]}...")
-                return found_values
+                return description, found_values
 
             except concurrent.futures.TimeoutError:
                 print(f"    [AI] Attempt {attempt} timed out.")
@@ -196,15 +219,16 @@ def get_llm_dimensions(page_pixmap):
                 print(f"    [AI] Attempt {attempt} failed: {e}")
         
         print("    [AI] All attempts failed. Skipping AI analysis.")
-        return set()
+        return "Unknown", set()
     except Exception as e:
         print(f"    [AI] Error: {e}")
-        return set()
+        return "Error", set()
 
 def process_pdf(input_path, output_path):
     doc = fitz.open(input_path)
     balloon_count = 0
     total_pages = len(doc)
+    doc_description = "Engineering Drawing"
     print(f"\nStarting processing for: {os.path.basename(input_path)} ({total_pages} pages)")
     
     for page_num, page in enumerate(doc):
@@ -212,13 +236,16 @@ def process_pdf(input_path, output_path):
         # 0. Get LLM Analysis for this page
         # Render page to image for the AI
         
-        # ACCURACY: Use higher resolution (2048px) to ensure dimensions are readable
-        limit = 2048 
+        # ACCURACY: Use high resolution (1600px) - balanced for speed/accuracy on CPU
+        limit = 1600 
         dim = max(page.rect.width, page.rect.height)
         zoom = limit / dim if dim > limit else 1.0
         
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom)) 
-        llm_values = get_llm_dimensions(pix)
+        page_desc, llm_values = get_llm_analysis(pix)
+        
+        if page_num == 0:
+            doc_description = page_desc
 
         # 1. Analyze Vector Graphics (Lines & Arrows)
         # We get all drawing paths to check for proximity to text
@@ -291,7 +318,7 @@ def process_pdf(input_path, output_path):
     doc.save(output_path)
     doc.close()
     print(f"Done! Saved to {output_path}. Total balloons: {balloon_count}\n")
-    return balloon_count
+    return balloon_count, doc_description
 
 @app.route('/', methods=['GET', 'POST'])
 def index():
@@ -308,14 +335,15 @@ def index():
             output_filename = f"ballooned_{filename}"
             output_path = os.path.join(app.config['PROCESSED_FOLDER'], output_filename)
             
-            count = process_pdf(input_path, output_path)
+            count, description = process_pdf(input_path, output_path)
             
-            return redirect(url_for('index', processed_file=output_filename, filename=filename, count=count))
+            return redirect(url_for('index', processed_file=output_filename, filename=filename, count=count, description=description))
             
     processed_file = request.args.get('processed_file')
     filename = request.args.get('filename')
     count = request.args.get('count')
-    return render_template_string(HTML_TEMPLATE, processed_file=processed_file, filename=filename, count=count)
+    description = request.args.get('description')
+    return render_template_string(HTML_TEMPLATE, processed_file=processed_file, filename=filename, count=count, description=description)
 
 @app.route('/download/<filename>')
 def download_file(filename):
